@@ -1,0 +1,6 @@
+{
+    "invoice_number": "string",
+    "date": "string",
+    "total_amount": "number",
+    "vendor_name": "string"
+}
