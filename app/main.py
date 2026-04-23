@@ -1,25 +1,21 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+import os
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
-from app.core.config import get_settings
-from app.core.exceptions import (
-    PDFParseError,
-    UnsupportedDocumentError,
-    ExtractionError,
-    LLMUnavailableError,
-    FileTooLargeError,
-)
-from app.models.response import ExtractionResponse, DocumentType
-from app.services.pdf_parser import PDFParser
-from app.services.classifier import DocumentClassifier
-from app.services.extractor import ExtractorService
-from app.services.llm_service import LLMService
+from app.schemas.base import DocumentType, ExtractionMethod
+from app.schemas import InvoiceExtraction, ResumeExtraction, BankStatementExtraction
+from app.utils.pdf_parser import parse_pdf
+from app.utils.classifier import classify_document
+from app.extractors.llm_extractor import extract_with_llm, LLM_PROVIDER, ANTHROPIC_API_KEY, GEMINI_API_KEY
+from app.extractors.rule_extractor import extract_with_rules
+
+MAX_FILE_SIZE_MB = 20
 
 app = FastAPI(
     title="Smart Report Extractor",
-    description="Extracts structured data from PDF invoices, resumes, and bank statements.",
+    description="Extract structured data and plain-English summaries from PDF documents.",
     version="1.0.0",
 )
 
@@ -30,101 +26,107 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Service singletons ---
-pdf_parser = PDFParser()
-classifier = DocumentClassifier()
-extractor_service = ExtractorService()
-llm_service = LLMService()
-settings = get_settings()
+# Serve the UI
+ui_path = os.path.join(os.path.dirname(__file__), "..", "ui")
+if os.path.exists(ui_path):
+    app.mount("/ui", StaticFiles(directory=ui_path, html=True), name="ui")
 
 
-@app.get("/", response_class=HTMLResponse)
-async def serve_ui():
-    """Serve the frontend UI."""
-    ui_path = Path(__file__).parent / "ui" / "index.html"
-    if ui_path.exists():
-        return HTMLResponse(content=ui_path.read_text())
-    return HTMLResponse("<h2>UI not found. Use POST /extract directly.</h2>")
+@app.get("/", include_in_schema=False)
+async def root():
+    index_path = os.path.join(os.path.dirname(__file__), "..", "ui", "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "Smart Report Extractor API — see /docs"}
 
 
-@app.post("/extract", response_model=ExtractionResponse)
+@app.get("/health")
+async def health():
+    llm_available = False
+    llm_provider_name = "none"
+    
+    if LLM_PROVIDER == "gemini" and GEMINI_API_KEY:
+        llm_available = True
+        llm_provider_name = "Google Gemini"
+    elif LLM_PROVIDER == "anthropic" and ANTHROPIC_API_KEY:
+        llm_available = True
+        llm_provider_name = "Anthropic Claude"
+    
+    return {
+        "status": "ok",
+        "llm_available": llm_available,
+        "llm_provider": llm_provider_name,
+        "supported_types": ["invoice", "resume", "bank_statement"],
+    }
+
+
+@app.post(
+    "/extract",
+    summary="Extract structured data from a PDF",
+    response_model=None,
+)
 async def extract(file: UploadFile = File(...)):
-    """
-    Main extraction endpoint.
-    Accepts a PDF file, classifies it, extracts fields, and returns a summary.
-    """
-    # 1. Validate file type
+    # ── Validate input ──────────────────────────────────────────────────────
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
 
-    # 2. Read and validate file size
-    file_bytes = await file.read()
-    if len(file_bytes) > settings.max_file_size_bytes:
+    content = await file.read()
+
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    if len(content) > MAX_FILE_SIZE_MB * 1024 * 1024:
         raise HTTPException(
             status_code=413,
-            detail=f"File too large. Maximum size is {settings.max_file_size_mb}MB.",
+            detail=f"File too large. Maximum size is {MAX_FILE_SIZE_MB}MB.",
         )
 
-    warnings: list[str] = []
-
-    # 3. Parse PDF → raw text
+    # ── Parse PDF ───────────────────────────────────────────────────────────
     try:
-        parsed = pdf_parser.extract(file_bytes)
-    except PDFParseError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        parsed = parse_pdf(content)
+    except Exception as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Failed to parse PDF — it may be encrypted or corrupted. ({e})",
+        )
 
-    text: str = parsed["text"]
-    page_count: int = parsed["page_count"]
+    if not parsed.full_text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No text could be extracted from this PDF. "
+                "It may be a scanned image — try an OCR tool first."
+            ),
+        )
 
-    # 4. Classify document type
-    doc_type, confidence = classifier.classify(text)
+    # ── Classify document type ──────────────────────────────────────────────
+    doc_type, confidence = classify_document(parsed.full_text)
 
     if doc_type == DocumentType.UNKNOWN:
         raise HTTPException(
             status_code=422,
             detail=(
-                "Could not determine document type. "
-                "Supported formats: Invoice, Resume, Bank Statement."
+                "Could not determine document type (invoice, resume, or bank statement). "
+                f"Classifier confidence was too low ({confidence:.0%}). "
+                "Ensure the document is one of the supported types."
             ),
         )
 
-    # 5. Extract structured fields
-    try:
-        fields = extractor_service.extract(doc_type, text)
-    except (UnsupportedDocumentError, ExtractionError) as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    # ── Extract: try LLM first, fall back to rules ──────────────────────────
+    result = await extract_with_llm(parsed, doc_type, confidence)
 
-    # 6. Generate LLM summary (graceful degradation)
-    summary: str | None = None
-    summary_available = True
+    if result is None:
+        # LLM unavailable, key missing, or returned an error
+        result = extract_with_rules(parsed, doc_type, confidence)
+        if not result.warnings:
+            result.warnings = []
+        result.warnings.append(
+            "LLM extraction was unavailable — rule-based fallback was used."
+        )
 
-    try:
-        summary = llm_service.summarize(text, doc_type)
-    except LLMUnavailableError as e:
-        summary_available = False
-        warnings.append(f"Summary unavailable: {str(e)}")
-
-    return ExtractionResponse(
-        document_type=doc_type,
-        confidence=confidence,
-        extracted_fields=fields,
-        summary=summary,
-        summary_available=summary_available,
-        page_count=page_count,
-        filename=file.filename,
-        warnings=warnings,
-    )
+    return result
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok", "version": "1.0.0"}
-
-
-# --- Global exception handlers ---
-@app.exception_handler(Exception)
-async def generic_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "An unexpected error occurred. Please try again."},
-    )
+@app.get("/docs-ui", include_in_schema=False)
+async def docs_redirect():
+    return FileResponse("ui/index.html")
