@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Report Extractor</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --surface-color: #1e293b;
+            --primary-color: #3b82f6;
+            --primary-hover: #2563eb;
+            --text-color: #f8fafc;
+            --text-muted: #94a3b8;
+            --border-color: #334155;
+            --success-color: #10b981;
+            --error-color: #ef4444;
+            --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            --radius-md: 12px;
+            --radius-sm: 8px;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: var(--font-family);
+            margin: 0;
+            padding: 2rem;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, #60a5fa, #3b82f6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        p.subtitle {
+            color: var(--text-muted);
+            margin-bottom: 2rem;
+        }
+
+        /* --- Panels --- */
+        .panel {
+            background-color: var(--surface-color);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 2rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            transition: all 0.3s ease;
+        }
+
+        /* --- Drag & Drop Zone --- */
+        .dropzone {
+            border: 2px dashed var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 3rem 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background-color: rgba(30, 41, 59, 0.5);
+            margin-bottom: 1.5rem;
+        }
+
+        .dropzone:hover, .dropzone.dragover {
+            border-color: var(--primary-color);
+            background-color: rgba(59, 130, 246, 0.05);
+        }
+
+        .dropzone svg {
+            width: 48px;
+            height: 48px;
+            margin-bottom: 1rem;
+            color: var(--primary-color);
+        }
+
+        .dropzone p {
+            margin: 0;
+            color: var(--text-muted);
+            font-size: 1.1rem;
+        }
+
+        .dropzone .highlight {
+            color: var(--primary-color);
+            font-weight: 600;
+        }
+
+        #file-input {
+            display: none;
+        }
+
+        #selected-file-name {
+            display: block;
+            margin-top: 1rem;
+            font-weight: 600;
+            color: var(--text-color);
+        }
+
+        /* --- Controls --- */
+        .controls {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .toggle-group {
+            display: flex;
+            background-color: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+        }
+
+        .toggle-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            padding: 0.75rem 1.5rem;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .toggle-btn.active {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        button.primary {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: var(--radius-sm);
+            padding: 0.75rem 1.5rem;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s ease, transform 0.1s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        button.primary:hover {
+            background-color: var(--primary-hover);
+            transform: translateY(-1px);
+        }
+
+        button.primary:disabled {
+            background-color: var(--border-color);
+            color: var(--text-muted);
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* --- Loader --- */
+        .loader {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* --- Results Area --- */
+        #results-container {
+            display: none;
+            animation: fadeIn 0.4s ease forwards;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .results-header h2 {
+            margin: 0;
+            font-size: 1.5rem;
+        }
+
+        .summary-stats {
+            display: flex;
+            gap: 1.5rem;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        .summary-stats span strong {
+            color: var(--text-color);
+        }
+
+        .confidence-high { color: var(--success-color); }
+        .confidence-med { color: #f59e0b; }
+        .confidence-low { color: var(--error-color); }
+
+        /* --- Table --- */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.95rem;
+            text-align: left;
+        }
+
+        th, td {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        th {
+            color: var(--text-muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            letter-spacing: 0.05em;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:hover td {
+            background-color: rgba(255, 255, 255, 0.02);
+        }
+
+        .field-name {
+            font-weight: 600;
+            color: #60a5fa;
+            width: 25%;
+        }
+
+        .field-value {
+            font-family: monospace;
+            background: var(--bg-color);
+            padding: 0.5rem;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            max-width: 300px;
+            overflow-wrap: break-word;
+        }
+
+        .field-conf {
+            width: 15%;
+            font-weight: 600;
+        }
+
+        .field-source {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            background: var(--bg-color);
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            display: inline-block;
+            word-break: break-all;
+        }
+
+        .error-message {
+            color: var(--error-color);
+            margin-top: 1rem;
+            text-align: center;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Smart Report Extractor</h1>
+    <p class="subtitle">Extract structured intelligence from Invoices, Bank Statements, and Resumes.</p>
+
+    <!-- Upload Panel -->
+    <div class="panel">
+        <input type="file" id="file-input" accept="application/pdf">
+        <label for="file-input" class="dropzone" id="dropzone">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
+            <p>Drag and drop a PDF file here, or <span class="highlight">browse</span></p>
+            <span id="selected-file-name"></span>
+        </label>
+
+        <div class="controls">
+            <div class="toggle-group" id="format-toggle">
+                <button type="button" class="toggle-btn active" data-format="json">JSON</button>
+                <button type="button" class="toggle-btn" data-format="csv">CSV</button>
+            </div>
+            
+            <button class="primary" id="extract-btn" disabled>
+                <span>Extract Data</span>
+                <div class="loader" id="loader"></div>
+            </button>
+        </div>
+        <div id="error-message" class="error-message"></div>
+    </div>
+
+    <!-- Results Panel -->
+    <div class="panel" id="results-container">
+        <div class="results-header">
+            <div>
+                <h2>Extraction Results</h2>
+                <div class="summary-stats" id="summary-stats">
+                    <!-- Populated via JS -->
+                </div>
+            </div>
+            <button class="primary" id="download-btn" style="background-color: var(--success-color);">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                Download <span id="download-format-label">JSON</span>
+            </button>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Field</th>
+                    <th>Value</th>
+                </tr>
+            </thead>
+            <tbody id="results-body">
+                <!-- Populated via JS -->
+            </tbody>
+        </table>
+    </div>
+
+</div>
+
+<script>
+    // --- State ---
+    let currentFile = null;
+    let selectedFormat = 'json';
+    let currentBlob = null; // Downloadable blob
+    let parsedJsonData = null; // Stored so we can render the table if format is JSON
+
+    // --- DOM Elements ---
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('file-input');
+    const selectedFileName = document.getElementById('selected-file-name');
+    const toggleBtns = document.querySelectorAll('.toggle-btn');
+    const extractBtn = document.getElementById('extract-btn');
+    const btnText = extractBtn.querySelector('span');
+    const loader = document.getElementById('loader');
+    const errorMsg = document.getElementById('error-message');
+    const resultsContainer = document.getElementById('results-container');
+    const summaryStats = document.getElementById('summary-stats');
+    const resultsBody = document.getElementById('results-body');
+    const downloadBtn = document.getElementById('download-btn');
+    const downloadFormatLabel = document.getElementById('download-format-label');
+
+    // --- Format Toggle ---
+    toggleBtns.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            toggleBtns.forEach(b => b.classList.remove('active'));
+            e.target.classList.add('active');
+            selectedFormat = e.target.getAttribute('data-format');
+            downloadFormatLabel.textContent = selectedFormat.toUpperCase();
+        });
+    });
+
+    // --- Drag and Drop Logic ---
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(evt => {
+        dropzone.addEventListener(evt, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    ['dragenter', 'dragover'].forEach(evt => {
+        dropzone.addEventListener(evt, () => dropzone.classList.add('dragover'), false);
+    });
+
+    ['dragleave', 'drop'].forEach(evt => {
+        dropzone.addEventListener(evt, () => dropzone.classList.remove('dragover'), false);
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        handleFiles(files);
+    }, false);
+
+    fileInput.addEventListener('change', function() {
+        handleFiles(this.files);
+    });
+
+    function handleFiles(files) {
+        if (files.length > 0) {
+            const file = files[0];
+            if (file.type === "application/pdf") {
+                currentFile = file;
+                selectedFileName.textContent = file.name;
+                extractBtn.disabled = false;
+                errorMsg.textContent = "";
+                resultsContainer.style.display = 'none';
+            } else {
+                errorMsg.textContent = "Please select a valid PDF file.";
+                extractBtn.disabled = true;
+                currentFile = null;
+                selectedFileName.textContent = "";
+            }
+        }
+    }
+
+    // --- Extract Action ---
+    extractBtn.addEventListener('click', async () => {
+        if (!currentFile) return;
+
+        // UI Loading state
+        extractBtn.disabled = true;
+        btnText.style.display = 'none';
+        loader.style.display = 'block';
+        errorMsg.textContent = "";
+        resultsContainer.style.display = 'none';
+        currentBlob = null;
+        parsedJsonData = null;
+
+        const formData = new FormData();
+        formData.append('file', currentFile);
+        formData.append('format', selectedFormat);
+
+        try {
+            const response = await fetch('/extract', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                throw new Error(`Server Error (${response.status}): ${errText}`);
+            }
+
+            // Read response as Blob for downloading
+            currentBlob = await response.blob();
+            
+            // If the output is JSON, we can parse it and render the table. 
+            // If it's CSV, we can't easily render the table without a CSV parser, 
+            // so we'll just show the download button.
+            if (selectedFormat === 'json') {
+                const text = await currentBlob.text();
+                parsedJsonData = JSON.parse(text);
+                renderResultsTable(parsedJsonData);
+            } else {
+                // CSV Mode: Just show summary stats if possible, clear table, show download
+                renderCsvReadyState();
+            }
+
+        } catch (err) {
+            console.error(err);
+            errorMsg.textContent = err.message || "Extraction failed.";
+        } finally {
+            // Restore UI state
+            extractBtn.disabled = false;
+            btnText.style.display = 'block';
+            loader.style.display = 'none';
+        }
+    });
+
+    // --- Render Results ---
+    function renderResultsTable(data) {
+        resultsBody.innerHTML = '';
+        summaryStats.innerHTML = '';
+        
+        let meta = null;
+
+        for (const [key, rawValue] of Object.entries(data)) {
+            if (key === "__meta__") {
+                meta = rawValue;
+                continue;
+            }
+
+            const tr = document.createElement('tr');
+
+            // Name
+            const tdName = document.createElement('td');
+            tdName.className = 'field-name';
+            tdName.textContent = key;
+
+            // Value (format lists/dicts safely)
+            const tdVal = document.createElement('td');
+            const valSpan = document.createElement('div');
+            valSpan.className = 'field-value';
+            
+            let valText = rawValue;
+            if (typeof valText === 'object' && valText !== null) {
+                valText = JSON.stringify(valText, null, 2);
+            }
+            valSpan.textContent = valText;
+            tdVal.appendChild(valSpan);
+
+            tr.appendChild(tdName);
+            tr.appendChild(tdVal);
+            resultsBody.appendChild(tr);
+        }
+
+        // Render Summary
+        if (meta) {
+            const overall = (parseFloat(meta.overall_confidence) * 100).toFixed(1);
+            let colorClass = 'confidence-low';
+            if (overall >= 85) colorClass = 'confidence-high';
+            else if (overall >= 60) colorClass = 'confidence-med';
+
+            summaryStats.innerHTML = `
+                <span>Fields: <strong>${meta.field_count || 0}</strong></span>
+                <span>Overall Confidence: <strong class="${colorClass}">${overall}%</strong></span>
+            `;
+        }
+
+        resultsContainer.style.display = 'block';
+    }
+
+    function renderCsvReadyState() {
+        resultsBody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding: 3rem;">Ready for download. Table preview is disabled for CSV format.</td></tr>';
+        summaryStats.innerHTML = '<span>Format: <strong>CSV</strong></span>';
+        resultsContainer.style.display = 'block';
+    }
+
+    // --- Download Action ---
+    downloadBtn.addEventListener('click', () => {
+        if (!currentBlob) return;
+        
+        const url = window.URL.createObjectURL(currentBlob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        
+        // Match FastAPI's suggested filename based on format
+        a.download = `extraction_result.${selectedFormat}`;
+        
+        document.body.appendChild(a);
+        a.click();
+        
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+    });
+
+</script>
+</body>
+</html>
