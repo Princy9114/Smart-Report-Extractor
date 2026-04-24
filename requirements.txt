@@ -1,0 +1,27 @@
+# Web framework
+fastapi>=0.110.0
+
+# ASGI server
+uvicorn[standard]>=0.29.0
+
+# Multipart / file upload support
+python-multipart>=0.0.9
+
+# Environment variable management (optional but commonly needed)
+python-dotenv>=1.0.0
+
+# PDF extraction
+pdfplumber>=0.11.0
+
+# NLP / Named Entity Recognition
+spacy>=3.7.0
+# After installing, download the model:
+#   python -m spacy download en_core_web_sm
+
+# Anthropic LLM client
+anthropic>=0.25.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0
