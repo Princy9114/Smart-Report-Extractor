@@ -1,6 +1,6 @@
 # Smart Report Extractor
 
-Smart Report Extractor is a robust, multi-layered data extraction pipeline built on FastAPI. It parses unstructured PDF documents—specifically **Invoices**, **Bank Statements**, and **Resumes**—and accurately extracts structured intelligence using a consensus-based confidence scoring system.
+Smart Report Extractor is a robust, multi-layered data extraction pipeline built on FastAPI. It parses unstructured PDF documents specifically **Invoices**, **Bank Statements**, and **Resumes**—and accurately extracts structured intelligence using a consensus-based confidence scoring system.
 
 ## 🚀 Features
 - **Heuristic Type Detection**: Automatically identifies the layout type of a document without AI.
