@@ -24,7 +24,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.models.field_result import FieldResult
 from backend.models.report_type import ReportType
-from backend.services import detector, exporter, merger
+from backend.services import detector, exporter, merger, summarizer
 from backend.services.layers import layer1_pdfplumber, layer2_spacy, layer3_regex, layer4_llm
 from backend.utils import pdf_utils
 
@@ -110,5 +110,13 @@ async def run_pipeline(
             logger.debug("Skipping LLM fallback: confidence %f is sufficient.", overall_conf)
         final_result = merged_prelim
 
-    # 6. Export pipeline result
+    # 6. Generate Document Summary
+    doc_summary_text = await summarizer.generate_summary(text, report_type, final_result)
+    final_result["document_summary"] = FieldResult(
+        value=doc_summary_text,
+        confidence=1.0,
+        source="summarizer"
+    )
+
+    # 7. Export pipeline result
     return exporter.export(final_result, output_format)

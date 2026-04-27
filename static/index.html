@@ -337,6 +337,10 @@
             </button>
         </div>
 
+        <div id="ai-summary-box" style="display:none; background-color: rgba(59, 130, 246, 0.1); border-left: 4px solid var(--primary-color); padding: 1rem 1.5rem; margin-bottom: 1.5rem; border-radius: 4px;">
+            <p style="margin: 0; color: var(--text-color); font-style: italic;" id="ai-summary-text"></p>
+        </div>
+
         <table>
             <thead>
                 <tr>
@@ -484,16 +488,26 @@
         }
     });
 
+    const aiSummaryBox = document.getElementById('ai-summary-box');
+    const aiSummaryText = document.getElementById('ai-summary-text');
+
     // --- Render Results ---
     function renderResultsTable(data) {
         resultsBody.innerHTML = '';
         summaryStats.innerHTML = '';
+        aiSummaryBox.style.display = 'none';
         
         let meta = null;
 
         for (const [key, rawValue] of Object.entries(data)) {
             if (key === "__meta__") {
                 meta = rawValue;
+                continue;
+            }
+            // Dedicate a special UI section for the document summary
+            if (key === "document_summary") {
+                aiSummaryText.textContent = rawValue;
+                aiSummaryBox.style.display = 'block';
                 continue;
             }
 

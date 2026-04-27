@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Module-level model load — done once, shared across all requests.
 # ---------------------------------------------------------------------------
-_MODEL_NAME = "en_core_web_sm"
+_MODEL_NAME = "en_core_web_md"
 _NLP: Language | None = None
 
 try:
