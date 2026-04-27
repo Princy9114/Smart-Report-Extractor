@@ -6,7 +6,7 @@ Smart Report Extractor is a robust, multi-layered data extraction pipeline built
 - **Heuristic Type Detection**: Automatically identifies the layout type of a document without AI.
 - **Offline Reliability**: Works fully offline out of the box using deterministic tools.
 - **Consensus Merger**: Runs multiple offline extraction layers concurrently (Positional, Generative NER, Regex) and mathematically calculates the most likely true-value field.
-- **Intelligent Fallback**: Conditionally fires an asynchronous Anthropic LLM abstraction attempt *only* if the offline system detects low overall document confidence.
+- **Intelligent Fallback**: Conditionally fires an asynchronous Google Gemini LLM abstraction attempt *only* if the offline system detects low overall document confidence.
 - **Sleek Interface**: Ships with a single-file Vanilla JS interface offering drag-and-drop support and a built-in results parser.
 - **Versatile Exports**: Streams parsed data back to the client as either formatted JSON or flattened CSV.
 
@@ -43,7 +43,7 @@ python -m spacy download en_core_web_md
 **4. Add Environment Variables**
 Create a `.env` file in the root if you want the LLM extraction fallback and API Summarizer to function.
 ```ini
-ANTHROPIC_API_KEY=sk-ant-api03-...
+GOOGLE_API_KEY=your_google_api_key_here
 ```
 
 ## 💻 Running the App

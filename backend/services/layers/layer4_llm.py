@@ -1,20 +1,19 @@
 """
 layer4_llm.py
 ~~~~~~~~~~~~~
-Extraction Layer 4: Anthropic Claude structured extraction.
+Extraction Layer 4: Google Gemini structured extraction.
 
-Sends the document text plus a field schema to Claude and parses the
+Sends the document text plus a field schema to Gemini and parses the
 JSON response into ``Dict[str, FieldResult]``.  All results carry
-``confidence=0.85`` and ``source="llm_anthropic"``.
+``confidence=0.85`` and ``source="llm_gemini"``.
 
 On any failure (API error, JSON parse error, etc.) the function logs a
 warning and returns an empty dict so the pipeline can fall back gracefully.
 
 Environment variables
 ---------------------
-ANTHROPIC_API_KEY   Required. Set in .env or the environment.
-ANTHROPIC_MODEL     Optional. Defaults to ``claude-3-5-haiku-20241022``.
-ANTHROPIC_MAX_TOKENS Optional. Defaults to 2048.
+GOOGLE_API_KEY      Required. Set in .env or the environment.
+GEMINI_MODEL        Optional. Defaults to ``gemini-1.5-flash``.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ import logging
 import os
 from typing import Any
 
-import anthropic
+import google.generativeai as genai
 
 from backend.models.field_result import FieldResult
 from backend.models.report_type import ReportType
@@ -34,10 +33,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Client — instantiated once at module level
 # ---------------------------------------------------------------------------
-_CLIENT = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-_MODEL       = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
-_MAX_TOKENS  = int(os.getenv("ANTHROPIC_MAX_TOKENS", "2048"))
+_MODEL       = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 _CONFIDENCE  = 0.85
 
 # ---------------------------------------------------------------------------
@@ -69,29 +67,27 @@ DOCUMENT TEXT:
 Respond with a JSON object only.
 """
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_messages(
+def _build_prompts(
     text: str,
     report_type: ReportType,
     field_schema: dict[str, str],
-) -> tuple[str, list[dict[str, str]]]:
-    """Build the system prompt and messages list for the Anthropic API."""
+) -> tuple[str, str]:
+    """Build the system instruction and user prompt for Gemini API."""
     system = _SYSTEM_PROMPT.format(report_type=report_type.value.replace("_", " "))
     user_content = _USER_PROMPT.format(
         field_schema=json.dumps(field_schema, indent=2),
-        text=text[:12_000],   # hard cap — keep well under token limits
+        text=text[:30_000],   # limit text to keep under reasonable bounds
     )
-    messages = [{"role": "user", "content": user_content}]
-    return system, messages
+    return system, user_content
 
 
 def _parse_response(raw: str) -> dict[str, Any]:
-    """Extract the JSON object from Claude's response text."""
-    # Strip potential markdown fences that Claude sometimes adds
+    """Extract the JSON object from the response text."""
+    # Strip potential markdown fences
     raw = raw.strip()
     if raw.startswith("```"):
         lines = raw.splitlines()
@@ -101,7 +97,7 @@ def _parse_response(raw: str) -> dict[str, Any]:
 
 def _to_field_results(data: dict[str, Any]) -> dict[str, FieldResult]:
     return {
-        key: FieldResult(value=val, confidence=_CONFIDENCE, source="llm_anthropic")
+        key: FieldResult(value=val, confidence=_CONFIDENCE, source="llm_gemini")
         for key, val in data.items()
         if val is not None
     }
@@ -157,25 +153,25 @@ async def extract(
     report_type: ReportType,
     field_schema: dict[str, str] | None = None,
 ) -> dict[str, FieldResult]:
-    """Call the Anthropic API to extract structured fields from *text*.
+    """Call the Google Gemini API to extract structured fields from *text*.
 
     Parameters
     ----------
     text:
-        Plain text of the document (first ~12 000 chars are sent).
+        Plain text of the document.
     report_type:
         Detected document type; used to select the default schema and to
         contextualise the prompt.
     field_schema:
         Optional override.  A ``{field_name: description}`` dict that tells
-        Claude which fields to extract and in what format.  Falls back to
+        Gemini which fields to extract and in what format.  Falls back to
         ``_DEFAULT_SCHEMAS[report_type]`` when not supplied.
 
     Returns
     -------
     dict[str, FieldResult]
         Extracted fields with ``confidence=0.85`` and
-        ``source="llm_anthropic"``.  Returns ``{}`` on any failure.
+        ``source="llm_gemini"``.  Returns ``{}`` on any failure.
     """
     if report_type is ReportType.UNKNOWN:
         logger.debug("layer4_llm: skipping LLM call for UNKNOWN report type.")
@@ -187,16 +183,21 @@ async def extract(
         return {}
 
     try:
-        system, messages = _build_messages(text, report_type, schema)
+        system, user_content = _build_prompts(text, report_type, schema)
 
-        response = await _CLIENT.messages.create(
-            model=_MODEL,
-            max_tokens=_MAX_TOKENS,
-            system=system,
-            messages=messages,
+        model = genai.GenerativeModel(
+            model_name=_MODEL,
+            system_instruction=system
         )
 
-        raw_text: str = response.content[0].text
+        response = await model.generate_content_async(
+            user_content,
+            generation_config=genai.types.GenerationConfig(
+                response_mime_type="application/json",
+            )
+        )
+
+        raw_text: str = response.text
         data = _parse_response(raw_text)
         result = _to_field_results(data)
         logger.info(
@@ -204,17 +205,9 @@ async def extract(
         )
         return result
 
-    except anthropic.AuthenticationError:
-        logger.warning(
-            "layer4_llm: Anthropic authentication failed — check ANTHROPIC_API_KEY."
-        )
-    except anthropic.RateLimitError:
-        logger.warning("layer4_llm: Anthropic rate limit exceeded.")
-    except anthropic.APIStatusError as exc:
-        logger.warning("layer4_llm: Anthropic API error %s — %s", exc.status_code, exc.message)
     except json.JSONDecodeError as exc:
-        logger.warning("layer4_llm: failed to parse LLM JSON response — %s", exc)
+        logger.warning("layer4_llm: failed to parse JSON response — %s", exc)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("layer4_llm: unexpected error — %s", exc)
+        logger.warning("layer4_llm: API or unexpected error — %s", exc)
 
     return {}
