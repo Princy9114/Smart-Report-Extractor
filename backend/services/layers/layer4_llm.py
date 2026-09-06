@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Client — instantiated once at module level
 # ---------------------------------------------------------------------------
-genai.configure(api_key=os.getenv("AIzaSyAOZG1kXQeNMkjtfgRsUvZUqiw0kZIENt0"))
+genai.configure(api_key=os.getenv("API_KEY"))
 
 _MODEL       = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 _CONFIDENCE  = 0.85
