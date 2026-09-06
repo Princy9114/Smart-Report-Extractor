@@ -1,8 +1,9 @@
 # Smart Report Extractor
 
-Smart Report Extractor is a robust, multi-layered data extraction pipeline built on FastAPI. It parses unstructured PDF documents specifically **Invoices**, **Bank Statements**, and **Resumes**—and accurately extracts structured intelligence using a consensus-based confidence scoring system.
+Smart Report Extractor is a robust, multi-layered data extraction pipeline built on FastAPI. It parses unstructured PDF documents and images—specifically **Invoices**, **Bank Statements**, and **Resumes**—and accurately extracts structured intelligence using a consensus-based confidence scoring system.
 
 ## 🚀 Features
+- **OCR Technology for Scans & Images**: Built-in offline OCR (RapidOCR ONNX) and page rendering (pypdfium2) to extract structured data from images (PNG, JPG, TIFF, WEBP) and scanned PDFs.
 - **Heuristic Type Detection**: Automatically identifies the layout type of a document without AI.
 - **Offline Reliability**: Works fully offline out of the box using deterministic tools.
 - **Consensus Merger**: Runs multiple offline extraction layers concurrently (Positional, Generative NER, Regex) and mathematically calculates the most likely true-value field.
@@ -13,12 +14,12 @@ Smart Report Extractor is a robust, multi-layered data extraction pipeline built
 ## 🧠 Architecture Setup
 
 The pipeline executes through strict sequential stages:
-1. `pdfplumber` attempts to rip the crude text layer and structural tables.
+1. `pdfplumber` rips crude digital text & tables; if the document is an image or scanned PDF, `ocr` renders and extracts text using RapidOCR.
 2. The core heuristic flags the `ReportType`.
 3. Three offline layers process the text independently.
 4. The `.merger` runs a consensus check on the field dictionaries. If `overall_confidence < 0.85`, it optionally activates the LLM API.
 5. The `summarizer` builds a concluding context string.
-6. The `exporter` transforms the dict into JSON/CSV streams.
+6. The `exporter` transforms the dict into JSON/CSV formats.
 
 ## ⚙️ Installation
 

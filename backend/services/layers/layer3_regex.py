@@ -38,10 +38,11 @@ from backend.models.report_type import ReportType
 PATTERNS: dict[str, re.Pattern[str]] = {
 
     # Invoice / document reference numbers
-    # Matches: INV-2024-001, BILL-00123, or a bare 6-12 digit run
+    # Strongly prefers labelled numbers or prefixed identifiers (INV-2024-001, Invoice No: 987654)
+    # Excludes bare 6-digit zipcodes or 10-digit phone numbers
     "invoice_number": re.compile(
-        r"\b(?:INV|INVOICE|BILL|REF|REC)[-/]?[\w\-]{3,15}\b"
-        r"|\b\d{6,12}\b",
+        r"(?:invoice\s*(?:number|no\.?|#|id)|inv\s*no\.?|bill\s*no\.?|bill\s*#)\s*[:#\-]?\s*([A-Za-z0-9\-_/]{3,30})"
+        r"|\b(?:INV|INVOICE|BILL|REC)[-_/][A-Za-z0-9\-_/]{3,25}\b",
         re.IGNORECASE,
     ),
 
@@ -61,30 +62,43 @@ PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b",
     ),
 
-    # Indian mobile (+91-XXXXXXXXXX, 0-XXXXXXXXXX) or generic 10+ digit international
+    # Phone: Indian mobile (+91 / 0), landlines with STD code (022-...), or clean international
     "phone": re.compile(
-        r"(?:\+91[\s\-]?|0)?[6-9]\d{9}"          # Indian mobile
-        r"|(?:\+\d{1,3}[\s\-]?)?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{4}",  # intl
+        r"(?:(?<=\s)|(?<=^)|(?<=[|•·,;:]))(?:\+91[\s\-]?)?[6-9]\d{9}\b"
+        r"|\b0\d{2,4}[\s\-]?\d{6,8}\b"
+        r"|(?:(?<=\s)|(?<=^)|(?<=[|•·,;:]))(?:\+\d{1,3}[\s\-]?)?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{4}\b",
         re.IGNORECASE,
     ),
 
-    # Monetary total — currency symbol or keyword before a decimal number
-    # e.g. "₹ 1,23,456.00", "USD 9,999.00", "Total: 5000", "Amount Due: 12345.50"
+    # Monetary total — strictly captures numeric/currency totals, ignoring unit-of-measure (NOS/PCS)
     "total_amount": re.compile(
-        r"(?:total(?:\s+(?:due|amount|payable))?|amount\s+due|grand\s+total|balance\s+due)"
+        r"(?:total(?:\s+(?:amount|due|payable|value))?|grand\s+total|net\s+(?:amount|payable)|balance\s+due|amount\s+payable)"
         r"\s*[:\-]?\s*"
-        r"(?:[₹$€£¥]?\s?)?"
-        r"(\d{1,3}(?:[,\s]\d{2,3})*(?:\.\d{2})?)",
+        r"(?:(?:INR|Rs\.?|USD|EUR|GBP|₹|\$|€|£)\s*)?"
+        r"([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{2})|[0-9]{2,}(?:\.[0-9]{2})?)",
         re.IGNORECASE,
     ),
 
     # Date in common formats
-    # DD/MM/YYYY · MM-DD-YYYY · YYYY-MM-DD · "15 Jan 2024" · "January 15, 2024"
+    # DD/MM/YYYY · YYYY-MM-DD · "15 Jan 2024" · "May 2023 - Present" · "2021 - 2025"
     "date": re.compile(
-        r"\b\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}\b"
-        r"|\b\d{4}[/\-\.]\d{1,2}[/\-\.]\d{1,2}\b"
-        r"|\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{4}\b"
-        r"|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\b",
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(?:19|20)\d{2}\s*[-–—]\s*(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(?:19|20)\d{2}|present)\b"
+        r"|\b(?:19|20)\d{2}\s*[-–—]\s*(?:(?:19|20)\d{2}|present)\b"
+        r"|\b\d{1,2}[/\-]\d{1,2}[/\-](?:19|20)\d{2}\b"
+        r"|\b(?:19|20)\d{2}[/\-]\d{1,2}[/\-]\d{1,2}\b"
+        r"|\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(?:19|20)\d{2}\b"
+        r"|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+(?:19|20)\d{2}\b"
+        r"|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(?:19|20)\d{2}\b",
+        re.IGNORECASE,
+    ),
+    "dates": re.compile(
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(?:19|20)\d{2}\s*[-–—]\s*(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(?:19|20)\d{2}|present)\b"
+        r"|\b(?:19|20)\d{2}\s*[-–—]\s*(?:(?:19|20)\d{2}|present)\b"
+        r"|\b\d{1,2}[/\-]\d{1,2}[/\-](?:19|20)\d{2}\b"
+        r"|\b(?:19|20)\d{2}[/\-]\d{1,2}[/\-]\d{1,2}\b"
+        r"|\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(?:19|20)\d{2}\b"
+        r"|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+(?:19|20)\d{2}\b"
+        r"|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(?:19|20)\d{2}\b",
         re.IGNORECASE,
     ),
 
@@ -116,7 +130,7 @@ _TYPE_FIELDS: dict[ReportType, set[str]] = {
         "email", "phone", "pan",
     },
     ReportType.RESUME: {
-        "email", "phone", "pan", "date",
+        "email", "phone", "pan", "dates",
     },
 }
 

@@ -293,16 +293,16 @@
 
 <div class="container">
     <h1>Smart Report Extractor</h1>
-    <p class="subtitle">Extract structured intelligence from Invoices, Bank Statements, and Resumes.</p>
+    <p class="subtitle">Extract structured intelligence from Invoices, Bank Statements, and Resumes (PDFs, Scans & Images with OCR).</p>
 
     <!-- Upload Panel -->
     <div class="panel">
-        <input type="file" id="file-input" accept="application/pdf">
+        <input type="file" id="file-input" accept=".pdf, .png, .jpg, .jpeg, .webp, .tiff, .bmp, image/*, application/pdf">
         <label for="file-input" class="dropzone" id="dropzone">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
             </svg>
-            <p>Drag and drop a PDF file here, or <span class="highlight">browse</span></p>
+            <p>Drag and drop a PDF or Image (PNG, JPG, TIFF, etc.) here, or <span class="highlight">browse</span></p>
             <span id="selected-file-name"></span>
         </label>
 
@@ -419,14 +419,26 @@
     function handleFiles(files) {
         if (files.length > 0) {
             const file = files[0];
-            if (file.type === "application/pdf") {
+            const name = file.name.toLowerCase();
+            const isSupported = name.endsWith('.pdf') || 
+                                name.endsWith('.png') || 
+                                name.endsWith('.jpg') || 
+                                name.endsWith('.jpeg') || 
+                                name.endsWith('.webp') || 
+                                name.endsWith('.tiff') || 
+                                name.endsWith('.bmp') ||
+                                file.type.startsWith('image/') ||
+                                file.type === 'application/pdf';
+
+            if (isSupported) {
                 currentFile = file;
-                selectedFileName.textContent = file.name;
+                const isImage = !name.endsWith('.pdf') && file.type !== 'application/pdf';
+                selectedFileName.textContent = `${file.name} ${isImage ? '(OCR Image)' : '(PDF Document)'}`;
                 extractBtn.disabled = false;
                 errorMsg.textContent = "";
                 resultsContainer.style.display = 'none';
             } else {
-                errorMsg.textContent = "Please select a valid PDF file.";
+                errorMsg.textContent = "Please select a supported PDF or Image file (PNG, JPG, TIFF, WEBP).";
                 extractBtn.disabled = true;
                 currentFile = null;
                 selectedFileName.textContent = "";

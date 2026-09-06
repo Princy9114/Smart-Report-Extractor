@@ -1,7 +1,10 @@
 import os
 import logging
 from typing import Dict, Any
-from anthropic import AsyncAnthropic
+try:
+    from anthropic import AsyncAnthropic
+except ImportError:
+    AsyncAnthropic = None
 
 from backend.models.report_type import ReportType
 from backend.models.field_result import FieldResult
@@ -10,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # Module-level client load
 _ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-if _ANTHROPIC_API_KEY:
+if _ANTHROPIC_API_KEY and AsyncAnthropic:
     try:
         _client = AsyncAnthropic(api_key=_ANTHROPIC_API_KEY)
     except Exception as e:

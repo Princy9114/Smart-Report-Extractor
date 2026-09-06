@@ -10,8 +10,13 @@ python-multipart>=0.0.9
 # Environment variable management (optional but commonly needed)
 python-dotenv>=1.0.0
 
-# PDF extraction
+# PDF & Image extraction
 pdfplumber>=0.11.0
+pypdfium2>=4.0.0
+Pillow>=10.0.0
+
+# OCR Engine (offline, ONNX-based)
+rapidocr-onnxruntime>=1.2.0
 
 # NLP / Named Entity Recognition
 spacy>=3.7.0

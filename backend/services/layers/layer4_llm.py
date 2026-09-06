@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Client — instantiated once at module level
 # ---------------------------------------------------------------------------
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+genai.configure(api_key=os.getenv("AIzaSyAOZG1kXQeNMkjtfgRsUvZUqiw0kZIENt0"))
 
 _MODEL       = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 _CONFIDENCE  = 0.85
@@ -87,12 +87,8 @@ def _build_prompts(
 
 def _parse_response(raw: str) -> dict[str, Any]:
     """Extract the JSON object from the response text."""
-    # Strip potential markdown fences
-    raw = raw.strip()
-    if raw.startswith("```"):
-        lines = raw.splitlines()
-        raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-    return json.loads(raw)
+    cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    return json.loads(cleaned)
 
 
 def _to_field_results(data: dict[str, Any]) -> dict[str, FieldResult]:

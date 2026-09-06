@@ -67,11 +67,45 @@ _INV_TOTAL_LABELS = [
 ]
 
 
+_NON_VENDOR_HEADERS = {
+    "tax invoice", "invoice", "bill of supply", "commercial invoice", "original",
+    "original for recipient", "duplicate", "triplicate", "proforma invoice", "receipt",
+    "bill", "statement", "credit note", "debit note",
+}
+
+
+def _extract_invoice_vendor(text: str) -> tuple[str, float] | None:
+    """Extract vendor name from top header lines of invoice."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for line in lines[:6]:
+        low = line.lower()
+        if low in _NON_VENDOR_HEADERS:
+            continue
+        if any(kw in low for kw in ("gstin", "invoice no", "inv no", "date:", "bill to", "ship to", "phone:", "email:")):
+            continue
+        if re.search(r"\b(?:pvt|ltd|inc|llc|corp|enterprises|solutions|services|technologies|company|co\.|industries)\b", low):
+            return line, 0.88
+        words = line.split()
+        if 2 <= len(words) <= 6 and not re.search(r"\d", line):
+            return line, 0.82
+    return None
+
+
 def _extract_invoice(
     text: str,
     tables: list[list[list[str | None]]],
 ) -> ExtractionResult:
     result: ExtractionResult = {}
+
+    # ── vendor from top header block ─────────────────────────────────────────
+    vendor_info = _extract_invoice_vendor(text)
+    if vendor_info:
+        vendor_val, vendor_conf = vendor_info
+        result["vendor"] = FieldResult(
+            value=vendor_val,
+            confidence=vendor_conf,
+            source="header_positional",
+        )
 
     # ── scalar fields via label-adjacent search ──────────────────────────────
     for field_name, labels in [
@@ -84,6 +118,18 @@ def _extract_invoice(
             if raw:
                 # Strip trailing noise (e.g. extra columns bled into the line)
                 value = re.split(r"\s{2,}|\t", raw)[0].strip()
+
+                if field_name == "total":
+                    # Check if value is a unit-of-measure / quantity like '2 NOS', '5 PCS'
+                    if re.search(r"\b(?:nos|no|pcs|pieces|qty|quantity|items|units|kg|meters)\b", value, re.IGNORECASE):
+                        # Search if an actual monetary amount exists elsewhere on the line
+                        amt_match = re.search(r"(?:[₹$€£¥]|INR|Rs\.?)?\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{2})|[0-9]{2,}(?:\.[0-9]{2})?)", raw)
+                        if amt_match:
+                            value = amt_match.group(0).strip()
+                        else:
+                            # Skip this non-monetary match and try next label
+                            continue
+
                 result[field_name] = FieldResult(
                     value=value,
                     confidence=0.85,
@@ -284,6 +330,53 @@ def _detect_headings_from_text(text: str) -> list[str]:
     return headings
 
 
+_NON_NAME_HEADERS = {
+    "resume", "curriculum vitae", "cv", "biodata", "bio-data", "bio data",
+    "portfolio", "profile", "contact", "contact info", "personal details",
+    "personal information", "about me", "summary", "professional summary",
+    "objective", "career objective",
+}
+
+_ROLE_OR_TECH_WORDS = {
+    "developer", "engineer", "scientist", "analyst", "architect", "designer",
+    "manager", "consultant", "intern", "student", "specialist", "administrator",
+    "lead", "full stack", "frontend", "backend", "data", "software", "machine learning",
+    "artificial intelligence", "deep learning", "python", "java", "react", "c++",
+    "fastapi", "docker", "aws", "cloud", "devops",
+}
+
+
+def _extract_header_name(lines: list[str]) -> tuple[str, float] | None:
+    """Extract candidate full name from top header lines of a resume."""
+    for line in lines[:6]:
+        s = line.strip()
+        if not s:
+            continue
+        # Split on common header delimiters (e.g. "Princy Patel | Software Engineer")
+        primary = re.split(r"\s*[|•·/]\s*", s)[0].strip()
+        low = primary.lower()
+        if low in _NON_NAME_HEADERS:
+            continue
+        if any(kw in low for kw in ("@", "http", "www.", "+91", "phone:", "email:", "linkedin", "github")):
+            continue
+        if re.search(r"\d", primary):
+            continue
+        words = primary.split()
+        if not (1 <= len(words) <= 5):
+            continue
+        # Ensure all words look like name tokens (letters, dots, hyphens, apostrophes)
+        if not all(re.match(r"^[A-Za-z]+[.\-']?$", w) for w in words):
+            continue
+        # Reject pure role/tech descriptor lines (e.g. "Full Stack Developer")
+        if low in _ROLE_OR_TECH_WORDS or all(w.lower() in _ROLE_OR_TECH_WORDS for w in words):
+            continue
+
+        conf = 0.90 if 2 <= len(words) <= 3 else 0.80
+        return primary, conf
+
+    return None
+
+
 def _extract_resume(
     text: str,
     tables: list[list[list[str | None]]],
@@ -301,11 +394,19 @@ def _extract_resume(
     lines = [ln.strip() for ln in text.splitlines()]
     non_empty = [ln for ln in lines if ln]
 
-    # ── candidate name: first non-empty line (largest font on page 1 typically)
-    if non_empty:
+    # ── candidate name: validated top header block
+    header_name_info = _extract_header_name(non_empty)
+    if header_name_info:
+        name_val, name_conf = header_name_info
+        result["name"] = FieldResult(
+            value=name_val,
+            confidence=name_conf,
+            source="header_positional",
+        )
+    elif non_empty:
         result["name"] = FieldResult(
             value=non_empty[0],
-            confidence=0.65,
+            confidence=0.60,
             source="first_line_heuristic",
         )
 
@@ -385,6 +486,47 @@ def _extract_resume(
                 value=content,
                 confidence=0.80,
                 source=source,
+            )
+
+        # ── extract organizations from education & experience sections ─────────
+        _DEGREE_WORDS = {
+            "bachelor", "master", "b.tech", "btech", "m.tech", "mtech", "b.e.", "b.sc",
+            "m.sc", "ph.d", "doctor", "diploma", "associate", "degree", "bba", "mba",
+            "bca", "mca",
+        }
+        org_candidates: list[str] = []
+        for heading, content in sections_content.items():
+            head_low = heading.lower()
+            if any(k in head_low for k in ("education", "academic", "university", "college", "experience", "employment", "work")):
+                for sec_line in content.splitlines():
+                    sl = sec_line.strip()
+                    if not sl or len(sl) > 60:
+                        continue
+                    if sl.startswith(("-", "•", "*", "–", "+")):
+                        continue
+                    low_sl = sl.lower()
+                    # Skip pure degree lines
+                    if any(deg in low_sl for deg in _DEGREE_WORDS) and not any(u in low_sl for u in ("university", "college", "institute", "academy")):
+                        continue
+                    # Match known institutional suffixes
+                    if re.search(r"\b(?:university|college|institute|academy|systems|technologies|corporation|corp|inc|ltd|pvt|solutions|consulting|labs|llc|hospital)\b", sl, re.IGNORECASE):
+                        clean_org = re.split(r"\s*[|•·,]\s*(?:bachelor|master|b\.tech|m\.tech|b\.e|m\.e|b\.sc|m\.sc|ph\.d|20\d\d|19\d\d)", sl, flags=re.IGNORECASE)[0].strip()
+                        if clean_org and len(clean_org) >= 3 and clean_org not in org_candidates:
+                            org_candidates.append(clean_org)
+                    # Standalone Title-Case company line under experience
+                    elif any(k in head_low for k in ("experience", "work", "employment")):
+                        words = sl.split()
+                        if 1 <= len(words) <= 4 and all(w[0].isupper() for w in words if w.isalpha()) and not re.search(r"\d", sl):
+                            if not any(w.lower() in _ROLE_OR_TECH_WORDS for w in words):
+                                cand_n = header_name_info[0] if header_name_info else ""
+                                if sl not in org_candidates and sl != cand_n:
+                                    org_candidates.append(sl)
+
+        if org_candidates:
+            result["organizations"] = FieldResult(
+                value=org_candidates,
+                confidence=0.85,
+                source="section_layout",
             )
 
     return result

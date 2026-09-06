@@ -4,10 +4,10 @@ report_type.py
 Enum representing every document category the extractor can recognise.
 """
 
-from enum import Enum
+from enum import StrEnum
 
 
-class ReportType(str, Enum):
+class ReportType(StrEnum):
     INVOICE = "invoice"
     BANK_STATEMENT = "bank_statement"
     RESUME = "resume"
