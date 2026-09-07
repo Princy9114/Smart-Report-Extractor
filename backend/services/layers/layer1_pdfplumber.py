@@ -31,7 +31,7 @@ from backend.models.report_type import ReportType
 ExtractionResult = dict[str, FieldResult]
 
 # ---------------------------------------------------------------------------
-# Shared regex helpers
+# Shared regex & 2D spatial coordinate helpers
 # ---------------------------------------------------------------------------
 
 def _first_match(pattern: str, text: str, flags: int = re.IGNORECASE) -> str | None:
@@ -51,11 +51,202 @@ def _label_value(label: str, text: str) -> str | None:
     return _first_match(pattern, text)
 
 
+def _normalize_token(t: str) -> str:
+    """Strip colons, hashes, hyphens, periods, and whitespace, lowercase."""
+    return re.sub(r"[:#\-\.\s]+", "", t).lower()
+
+
+def _find_label_in_words(
+    target_clean: str,
+    words: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+    """Find all occurrences of a label in spatial words using a sliding window.
+
+    Returns a list of (label_bbox, matched_words).
+    """
+    matches = []
+    if not target_clean or not words:
+        return matches
+
+    for w_size in range(1, 5):
+        for i in range(len(words) - w_size + 1):
+            window = words[i : i + w_size]
+            # All words must be on same page
+            if any(w.get("page_idx", 0) != window[0].get("page_idx", 0) for w in window):
+                continue
+            # All words must be on same horizontal line (tops within 5pt)
+            if any(abs(w.get("top", 0) - window[0].get("top", 0)) > 5.0 for w in window):
+                continue
+
+            joined = "".join(_normalize_token(w["text"]) for w in window)
+            if joined == target_clean:
+                bbox = {
+                    "page_idx": window[0].get("page_idx", 0),
+                    "x0": min(w.get("x0", 0.0) for w in window),
+                    "x1": max(w.get("x1", 0.0) for w in window),
+                    "top": min(w.get("top", 0.0) for w in window),
+                    "bottom": max(w.get("bottom", 0.0) for w in window),
+                }
+                matches.append((bbox, window))
+
+    return matches
+
+
+_KNOWN_LABEL_PHRASES = {
+    "account no", "account number", "acc no", "a/c no", "ac no",
+    "account holder", "account name", "customer name", "cust name",
+    "open balance", "opening balance", "beginning balance",
+    "close balance", "closing balance", "ending balance",
+    "statement period", "statement date", "ifsc code", "ifsc",
+    "cif number", "cif no", "account type", "branch", "branch code",
+    "invoice no", "invoice number", "inv no", "invoice date", "issue date",
+    "total amount", "grand total", "sub total", "subtotal",
+    "total due", "amount due", "balance due",
+}
+
+
+def _spatial_label_value(
+    labels: list[str],
+    spatial_words: list[dict[str, Any]] | None,
+    text: str,
+    *,
+    field_name: str = "",
+) -> tuple[str, float, str, str] | None:
+    """Extract key-value pair using 2D spatial coordinate proximity with fallback to text regex.
+
+    Returns:
+        tuple[value, confidence, source, raw] or None
+    """
+    if spatial_words:
+        sorted_words = sorted(
+            spatial_words,
+            key=lambda w: (w.get("page_idx", 0), round(w.get("top", 0.0), 1), round(w.get("x0", 0.0), 1))
+        )
+
+        for label in labels:
+            clean_label = _normalize_token(label)
+            if not clean_label:
+                continue
+
+            matches = _find_label_in_words(clean_label, sorted_words)
+            for bbox, label_words in matches:
+                p_idx = bbox["page_idx"]
+                page_words = [w for w in sorted_words if w.get("page_idx", 0) == p_idx]
+
+                # -------------------------------------------------------------
+                # Strategy 1: Horizontal Right Scan (Inline Key-Value)
+                # -------------------------------------------------------------
+                right_candidates = []
+                for w in page_words:
+                    is_same_line = (
+                        abs(w.get("top", 0.0) - bbox["top"]) <= 5.0
+                        or (w.get("top", 0.0) >= bbox["top"] - 3.0 and w.get("bottom", 0.0) <= bbox["bottom"] + 3.0)
+                    )
+                    if is_same_line and w.get("x0", 0.0) >= bbox["x1"] - 2.0 and w.get("x0", 0.0) <= bbox["x1"] + 350.0:
+                        if w not in label_words:
+                            right_candidates.append(w)
+
+                right_candidates.sort(key=lambda w: w.get("x0", 0.0))
+
+                collected_h: list[str] = []
+                last_x1 = bbox["x1"]
+
+                for w in right_candidates:
+                    w_text = w["text"].strip()
+                    if not collected_h and w_text in {":", "-", "#", "—", "|"}:
+                        last_x1 = w.get("x1", last_x1)
+                        continue
+
+                    low_w = _normalize_token(w_text)
+                    if low_w in {"ifsc", "cif", "branch", "pan", "gstin"} or w_text.endswith(":"):
+                        if collected_h:
+                            break
+                        else:
+                            collected_h = []
+                            break
+
+                    # Stop if a large gap indicates column boundary (> 45pt)
+                    if collected_h and (w.get("x0", 0.0) - last_x1 > 45.0):
+                        break
+
+                    collected_h.append(w_text)
+                    last_x1 = w.get("x1", last_x1)
+
+                if collected_h:
+                    raw_val = " ".join(collected_h).strip()
+                    val = re.sub(r"^[:#\-\s]+|[:#\-\s]+$", "", raw_val).strip()
+                    norm_val = _normalize_token(val)
+                    # Check if extracted string is another known label phrase (e.g. in grid/table headers)
+                    is_label_phrase = any(
+                        norm_val == _normalize_token(lp) or norm_val.startswith(_normalize_token(lp))
+                        for lp in _KNOWN_LABEL_PHRASES
+                    )
+                    if not is_label_phrase and val and re.search(r"[A-Za-z0-9]", val):
+                        return val, 0.90, "spatial_horizontal", raw_val
+
+                # -------------------------------------------------------------
+                # Strategy 2: Vertical Downward Scan (Stacked / Boxed Grid Cell)
+                # -------------------------------------------------------------
+                line_h = max(bbox["bottom"] - bbox["top"], 10.0)
+                min_top = bbox["bottom"] - 2.0
+                max_top = bbox["bottom"] + max(28.0, line_h * 2.2)
+
+                down_candidates = []
+                for w in page_words:
+                    if w in label_words:
+                        continue
+                    w_top = w.get("top", 0.0)
+                    w_x0 = w.get("x0", 0.0)
+                    if min_top <= w_top <= max_top:
+                        if (w_x0 >= bbox["x0"] - 25.0) and (w_x0 <= bbox["x1"] + 150.0):
+                            down_candidates.append(w)
+
+                down_candidates.sort(key=lambda w: (round(w.get("top", 0.0), 1), w.get("x0", 0.0)))
+
+                if down_candidates:
+                    first_line_top = down_candidates[0].get("top", 0.0)
+                    first_line_words = [
+                        w for w in down_candidates
+                        if abs(w.get("top", 0.0) - first_line_top) <= 4.0
+                    ]
+                    first_line_words.sort(key=lambda w: w.get("x0", 0.0))
+
+                    collected_v: list[str] = []
+                    last_x1_v = bbox["x0"]
+                    for w in first_line_words:
+                        w_text = w["text"].strip()
+                        if not collected_v and w_text in {":", "-", "#", "—", "|"}:
+                            last_x1_v = w.get("x1", last_x1_v)
+                            continue
+                        if collected_v and (w.get("x0", 0.0) - last_x1_v > 45.0):
+                            break
+                        collected_v.append(w_text)
+                        last_x1_v = w.get("x1", last_x1_v)
+
+                    if collected_v:
+                        raw_val = " ".join(collected_v).strip()
+                        val = re.sub(r"^[:#\-\s]+|[:#\-\s]+$", "", raw_val).strip()
+                        if val and re.search(r"[A-Za-z0-9]", val):
+                            return val, 0.88, "spatial_vertical", raw_val
+
+    # -------------------------------------------------------------------------
+    # Fallback: Serialized Text Regex Scan
+    # -------------------------------------------------------------------------
+    for label in labels:
+        raw = _label_value(label, text)
+        if raw:
+            value = re.split(r"\s{2,}|\t", raw)[0].strip()
+            val = re.sub(r"^[:#\-\s]+|[:#\-\s]+$", "", value).strip()
+            if val and re.search(r"[A-Za-z0-9]", val):
+                return val, 0.85, "label_adjacent", raw
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # ── INVOICE ─────────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 
-# Labels tried in order; first match wins.
 _INV_NUMBER_LABELS = [
     "invoice number", "invoice no", "invoice #", "invoice id", "inv no", "inv #",
 ]
@@ -94,6 +285,7 @@ def _extract_invoice_vendor(text: str) -> tuple[str, float] | None:
 def _extract_invoice(
     text: str,
     tables: list[list[list[str | None]]],
+    spatial_words: list[dict[str, Any]] | None = None,
 ) -> ExtractionResult:
     result: ExtractionResult = {}
 
@@ -107,36 +299,28 @@ def _extract_invoice(
             source="header_positional",
         )
 
-    # ── scalar fields via label-adjacent search ──────────────────────────────
+    # ── scalar fields via spatial & label-adjacent search ────────────────────
     for field_name, labels in [
         ("invoice_number", _INV_NUMBER_LABELS),
         ("date",           _INV_DATE_LABELS),
         ("total",          _INV_TOTAL_LABELS),
     ]:
-        for label in labels:
-            raw = _label_value(label, text)
-            if raw:
-                # Strip trailing noise (e.g. extra columns bled into the line)
-                value = re.split(r"\s{2,}|\t", raw)[0].strip()
-
-                if field_name == "total":
-                    # Check if value is a unit-of-measure / quantity like '2 NOS', '5 PCS'
-                    if re.search(r"\b(?:nos|no|pcs|pieces|qty|quantity|items|units|kg|meters)\b", value, re.IGNORECASE):
-                        # Search if an actual monetary amount exists elsewhere on the line
-                        amt_match = re.search(r"(?:[₹$€£¥]|INR|Rs\.?)?\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{2})|[0-9]{2,}(?:\.[0-9]{2})?)", raw)
-                        if amt_match:
-                            value = amt_match.group(0).strip()
-                        else:
-                            # Skip this non-monetary match and try next label
-                            continue
-
-                result[field_name] = FieldResult(
-                    value=value,
-                    confidence=0.85,
-                    source="label_adjacent",
-                    raw=raw,
-                )
-                break
+        spatial_res = _spatial_label_value(labels, spatial_words, text, field_name=field_name)
+        if spatial_res:
+            value, conf, source, raw = spatial_res
+            if field_name == "total":
+                if re.search(r"\b(?:nos|no|pcs|pieces|qty|quantity|items|units|kg|meters)\b", value, re.IGNORECASE):
+                    amt_match = re.search(r"(?:[₹$€£¥]|INR|Rs\.?)?\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{2})|[0-9]{2,}(?:\.[0-9]{2})?)", raw)
+                    if amt_match:
+                        value = amt_match.group(0).strip()
+                    else:
+                        continue
+            result[field_name] = FieldResult(
+                value=value,
+                confidence=conf,
+                source=source,
+                raw=raw,
+            )
 
     # ── line items from tables ───────────────────────────────────────────────
     line_items: list[dict[str, str]] = []
@@ -144,7 +328,6 @@ def _extract_invoice(
         if not table or len(table) < 2:
             continue
 
-        # Detect header row: look for a row containing "description"/"item"
         header_row: list[str | None] | None = None
         data_start = 0
         for idx, row in enumerate(table):
@@ -155,7 +338,6 @@ def _extract_invoice(
                 break
 
         if header_row is None:
-            # Use the first row as a fallback header
             header_row = table[0]
             data_start = 1
 
@@ -187,37 +369,50 @@ def _extract_invoice(
 # ---------------------------------------------------------------------------
 
 _BANK_SCALAR_LABELS: list[tuple[str, list[str]]] = [
-    ("account_number",   ["account number", "account no", "acc no", "account #"]),
-    ("account_name",     ["account name", "account holder"]),
-    ("opening_balance",  ["opening balance", "beginning balance", "balance brought forward"]),
-    ("closing_balance",  ["closing balance", "ending balance", "balance carried forward"]),
-    ("statement_period", ["statement period", "period", "statement date", "from"]),
+    ("account_number",   ["account number", "account no", "acc no", "account #", "a/c no", "a/c number", "ac no"]),
+    ("account_name",     ["account name", "account holder", "customer name", "name", "account holder name", "cust name"]),
+    ("opening_balance",  ["opening balance", "beginning balance", "balance brought forward", "open balance", "b/f balance", "op bal"]),
+    ("closing_balance",  ["closing balance", "ending balance", "balance carried forward", "close balance", "c/f balance", "cl bal"]),
+    ("statement_period", ["statement period", "period", "statement date", "from", "duration"]),
     ("bank_name",        ["bank name", "bank"]),
+    ("ifsc",             ["ifsc code", "ifsc", "rtgs/neft ifsc"]),
 ]
 
-# Column keywords that signal a transaction table
 _TXN_COL_SIGNALS = {"date", "description", "debit", "credit", "balance", "amount", "particulars"}
 
 
 def _extract_bank_statement(
     text: str,
     tables: list[list[list[str | None]]],
+    spatial_words: list[dict[str, Any]] | None = None,
 ) -> ExtractionResult:
     result: ExtractionResult = {}
 
+    # ── bank_name from top lines heuristic
+    top_lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:4]
+    for line in top_lines:
+        low = line.lower()
+        if any(b in low for b in ("bank", "hdfc", "icici", "sbi", "axis", "kotak", "pnb", "bob", "citi", "standard chartered", "hsbc")):
+            result["bank_name"] = FieldResult(
+                value=line,
+                confidence=0.88,
+                source="header_positional",
+            )
+            break
+
     # ── scalar fields ────────────────────────────────────────────────────────
     for field_name, labels in _BANK_SCALAR_LABELS:
-        for label in labels:
-            raw = _label_value(label, text)
-            if raw:
-                value = re.split(r"\s{2,}|\t", raw)[0].strip()
-                result[field_name] = FieldResult(
-                    value=value,
-                    confidence=0.85,
-                    source="label_adjacent",
-                    raw=raw,
-                )
-                break
+        if field_name == "bank_name" and "bank_name" in result:
+            continue
+        spatial_res = _spatial_label_value(labels, spatial_words, text, field_name=field_name)
+        if spatial_res:
+            value, conf, source, raw = spatial_res
+            result[field_name] = FieldResult(
+                value=value,
+                confidence=conf,
+                source=source,
+                raw=raw,
+            )
 
     # ── transaction table ────────────────────────────────────────────────────
     best_table: list[list[str | None]] | None = None
@@ -226,7 +421,6 @@ def _extract_bank_statement(
     for table in tables:
         if not table:
             continue
-        # Score the first row as a header candidate
         first_row = [str(c).lower().strip() if c else "" for c in table[0]]
         hits = sum(1 for cell in first_row if cell in _TXN_COL_SIGNALS)
         if hits > best_signal_count:
@@ -380,7 +574,9 @@ def _extract_header_name(lines: list[str]) -> tuple[str, float] | None:
 def _extract_resume(
     text: str,
     tables: list[list[list[str | None]]],
+    *,
     pages: list[Any] | None = None,
+    spatial_words: list[dict[str, Any]] | None = None,
 ) -> ExtractionResult:
     """
     Parameters
@@ -389,6 +585,8 @@ def _extract_resume(
         Optional list of raw ``pdfplumber.Page`` objects.  When supplied,
         real font-size signals are used to detect headings instead of the
         text-only heuristic.
+    spatial_words:
+        Optional list of word bounding boxes with 2D coordinates.
     """
     result: ExtractionResult = {}
     lines = [ln.strip() for ln in text.splitlines()]
@@ -542,8 +740,9 @@ def extract(
     report_type: ReportType,
     *,
     pages: list[Any] | None = None,
+    spatial_words: list[dict[str, Any]] | None = None,
 ) -> ExtractionResult:
-    """Layer 1 extraction using pdfplumber-derived text and table signals.
+    """Layer 1 extraction using pdfplumber-derived text, table, and 2D spatial word signals.
 
     Parameters
     ----------
@@ -557,6 +756,9 @@ def extract(
     pages:
         Optional list of raw ``pdfplumber.Page`` objects.  Only used for
         resume extraction; enables real font-size-based heading detection.
+    spatial_words:
+        Optional list of word bounding boxes with 2D spatial coordinates
+        (``text``, ``x0``, ``x1``, ``top``, ``bottom``, ``page_idx``).
 
     Returns
     -------
@@ -566,10 +768,11 @@ def extract(
     """
     match report_type:
         case ReportType.INVOICE:
-            return _extract_invoice(text, tables)
+            return _extract_invoice(text, tables, spatial_words=spatial_words)
         case ReportType.BANK_STATEMENT:
-            return _extract_bank_statement(text, tables)
+            return _extract_bank_statement(text, tables, spatial_words=spatial_words)
         case ReportType.RESUME:
-            return _extract_resume(text, tables, pages=pages)
+            return _extract_resume(text, tables, pages=pages, spatial_words=spatial_words)
         case _:
             return {}
+

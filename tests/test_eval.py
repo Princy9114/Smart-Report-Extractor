@@ -38,11 +38,12 @@ def _normalize_str(val: Any) -> str:
 def _evaluate_sample(sample: dict[str, Any]) -> dict[str, Any]:
     text = sample["text"]
     tables = sample.get("tables", [])
+    spatial_words = sample.get("spatial_words", None)
     report_type = sample["report_type"]
     gt = sample["ground_truth"]
 
     # Run extraction layers
-    l1 = layer1_pdfplumber.extract(text, tables, report_type)
+    l1 = layer1_pdfplumber.extract(text, tables, report_type, spatial_words=spatial_words)
     l2 = layer2_spacy.extract(text, report_type)
     l3 = layer3_regex.extract(text, report_type)
 

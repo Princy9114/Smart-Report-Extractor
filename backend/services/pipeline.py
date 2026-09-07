@@ -73,6 +73,7 @@ async def run_pipeline(
 
     # 1. Extract raw text and tables (handling images, digital PDFs, and scanned PDFs)
     tables: list[list] = []
+    spatial_words: list[dict[str, Any]] = []
     ocr_used: bool = False
 
     if _is_image(filename, file_bytes):
@@ -87,7 +88,7 @@ async def run_pipeline(
             logger.warning("[PIPELINE ABORTED] PDF '%s' is encrypted or unreadable.", filename)
             return exporter.export({}, output_format)
 
-        text, tables, page_count = pdf_data
+        text, tables, page_count, spatial_words = pdf_data
 
         # Check if the PDF is a scanned document (image-only with little/no digital text)
         if ocr.is_scanned_pdf(text, page_count):
@@ -122,7 +123,7 @@ async def run_pipeline(
     # 3. Fast offline layers
     layer_results: dict[str, ExtractionResult] = {}
 
-    l1 = layer1_pdfplumber.extract(text, tables, report_type)
+    l1 = layer1_pdfplumber.extract(text, tables, report_type, spatial_words=spatial_words)
     l2 = layer2_spacy.extract(text, report_type)
     l3 = layer3_regex.extract(text, report_type)
 
