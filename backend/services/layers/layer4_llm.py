@@ -40,7 +40,7 @@ _CONFIDENCE = 0.85
 
 def get_gemini_client(api_key: str | None = None) -> genai.Client | None:
     """Instantiate a Google GenAI client if an API key is available."""
-    key = api_key or os.getenv("AQ.Ab8RN6KZyx-a_tG2THFsY8Dnz0xYiUGPrthvLOxMSYH9IO3whg") or os.getenv("AQ.Ab8RN6KZyx-a_tG2THFsY8Dnz0xYiUGPrthvLOxMSYH9IO3whg")
+    key = api_key or os.getenv("Google_API_Key") or os.getenv("GEMINI_API_KEY")
     if not key or not key.strip():
         return None
     try:
