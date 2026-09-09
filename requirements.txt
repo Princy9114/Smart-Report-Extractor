@@ -23,8 +23,9 @@ spacy>=3.7.0
 # After installing, download the model:
 #   python -m spacy download en_core_web_sm
 
-# Google Gemini LLM client
-google-generativeai>=0.8.0
+# Google Gemini LLM client (official Google GenAI SDK)
+google-genai>=2.0.0
+
 
 # Testing
 pytest>=8.0.0

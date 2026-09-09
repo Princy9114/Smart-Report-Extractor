@@ -36,9 +36,30 @@ def test_ocr_extract_text_from_image():
     extracted_text = ocr.extract_text_from_image(img_bytes)
 
     assert len(extracted_text) > 0
-    # RapidOCR should detect key strings from the rendered image
     upper = extracted_text.upper()
     assert "INVOICE" in upper or "INV" in upper or "ACME" in upper or "1,250" in upper or "TOTAL" in upper
+
+
+def test_ocr_extract_text_and_spatial_words():
+    img_bytes = _create_synthetic_invoice_image()
+    text, spatial_words = ocr.extract_text_and_spatial_words_from_image(img_bytes)
+
+    assert len(text) > 0
+    assert len(spatial_words) > 0
+    for w in spatial_words:
+        assert "text" in w
+        assert "x0" in w and "x1" in w
+        assert "top" in w and "bottom" in w
+        assert w["x1"] >= w["x0"]
+        assert w["bottom"] >= w["top"]
+
+
+def test_preprocess_image_for_ocr():
+    # Test upscaling and contrast enhancement on small canvas
+    small_img = Image.new("RGB", (300, 200), color="gray")
+    preprocessed = ocr.preprocess_image_for_ocr(small_img)
+    w, h = preprocessed.size
+    assert w >= 600 or h >= 400
 
 
 def test_is_scanned_pdf_heuristic():
@@ -62,3 +83,8 @@ async def test_pipeline_with_image_input():
 
     # Verify structured fields were extracted via pipeline
     assert "__meta__" in data
+    assert "invoice_number" in data
+    assert "inv-9988" in str(data["invoice_number"]).lower()
+
+
+

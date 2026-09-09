@@ -77,11 +77,11 @@ async def run_pipeline(
     ocr_used: bool = False
 
     if _is_image(filename, file_bytes):
-        logger.info("[OCR TRIGGERED] 📸 File '%s' is an image. Invoking RapidOCR engine...", filename)
-        text = ocr.extract_text_from_image(file_bytes)
+        logger.info("[OCR TRIGGERED] 📸 File '%s' is an image. Invoking RapidOCR engine with 2D spatial layout...", filename)
+        text, spatial_words = ocr.extract_text_and_spatial_words_from_image(file_bytes)
         page_count = 1
         ocr_used = True
-        logger.info("[OCR COMPLETED] Extracted %d character(s) from image via OCR.", len(text))
+        logger.info("[OCR COMPLETED] Extracted %d character(s) and %d spatial bounding box(es) from image.", len(text), len(spatial_words))
     else:
         pdf_data = pdf_utils.extract_pdf_content(file_bytes)
         if pdf_data is None:
@@ -93,16 +93,17 @@ async def run_pipeline(
         # Check if the PDF is a scanned document (image-only with little/no digital text)
         if ocr.is_scanned_pdf(text, page_count):
             logger.info(
-                "[OCR TRIGGERED] 📄 PDF '%s' has %d page(s) with minimal digital text (%d chars). Running page-by-page OCR rendering...",
+                "[OCR TRIGGERED] 📄 PDF '%s' has %d page(s) with minimal digital text (%d chars). Running page-by-page OCR rendering with spatial extraction...",
                 filename,
                 page_count,
                 len(text),
             )
-            ocr_text = ocr.extract_text_from_pdf_pages(file_bytes)
+            ocr_text, ocr_spatial_words = ocr.extract_text_and_spatial_words_from_pdf_pages(file_bytes)
             if ocr_text:
                 text = ocr_text
+                spatial_words = ocr_spatial_words
                 ocr_used = True
-                logger.info("[OCR COMPLETED] Extracted %d character(s) across %d scanned page(s).", len(text), page_count)
+                logger.info("[OCR COMPLETED] Extracted %d character(s) and %d spatial bounding box(es) across %d scanned page(s).", len(text), len(spatial_words), page_count)
         else:
             logger.info(
                 "[DIGITAL EXTRACTION] 📑 PDF '%s' contains digital text (%d chars, %d table(s), %d page(s)). (OCR skipped).",
@@ -120,9 +121,22 @@ async def run_pipeline(
         logger.warning("[PIPELINE ABORTED] Document type is UNKNOWN. Returning empty result.")
         return exporter.export({}, output_format)
 
-    # 3. Fast offline layers
+    # 3. Extraction layers (Layer 4 LLM called first)
     layer_results: dict[str, ExtractionResult] = {}
 
+    api_key = os.getenv("GOOGLE_API_KEY", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
+    if api_key:
+        logger.info("[LAYER 4: Gemini LLM (PRIMARY)] 🤖 Invoking Google Gemini LLM extraction first...")
+        l4_result = await layer4_llm.extract(text, report_type)
+        if l4_result:
+            layer_results["layer4_llm"] = l4_result
+            logger.info("[LAYER 4: Gemini LLM] Extracted %d field(s): %s", len(l4_result), list(l4_result.keys()))
+        else:
+            logger.info("[LAYER 4: Gemini LLM] No fields returned from Gemini LLM.")
+    else:
+        logger.info("[LAYER 4: Gemini LLM] Skipped (No GOOGLE_API_KEY / GEMINI_API_KEY configured).")
+
+    # Offline extraction layers
     l1 = layer1_pdfplumber.extract(text, tables, report_type, spatial_words=spatial_words)
     l2 = layer2_spacy.extract(text, report_type)
     l3 = layer3_regex.extract(text, report_type)
@@ -135,32 +149,9 @@ async def run_pipeline(
     logger.info("[LAYER 2: spaCy NER]         Extracted %d field(s): %s", len(l2), list(l2.keys()))
     logger.info("[LAYER 3: Regex Patterns]   Extracted %d field(s): %s", len(l3), list(l3.keys()))
 
-    # 4. Preliminary merge to check confidence
-    merged_prelim = merger.merge(layer_results)
-    prelim_meta = merged_prelim.get("__meta__", FieldResult(value={})).value
-    overall_conf = prelim_meta.get("overall_confidence", 0.0)
+    # 4. Consensus merge of all active layers
+    final_result = merger.merge(layer_results)
 
-    logger.info("[CONSENSUS MERGE] Offline confidence: %.3f (Threshold for LLM: %.2f)", overall_conf, _LLM_CONFIDENCE_THRESHOLD)
-
-    # 5. Conditional LLM fallback
-    api_key = os.getenv("GOOGLE_API_KEY", "").strip()
-    
-    if api_key and overall_conf < _LLM_CONFIDENCE_THRESHOLD:
-        logger.info("[LAYER 4: Gemini LLM] 🤖 Confidence %.3f < %.2f. Invoking LLM fallback...", overall_conf, _LLM_CONFIDENCE_THRESHOLD)
-        l4_result = await layer4_llm.extract(text, report_type)
-        if l4_result:
-            layer_results["layer4_llm"] = l4_result
-            logger.info("[LAYER 4: Gemini LLM] Extracted %d field(s): %s", len(l4_result), list(l4_result.keys()))
-            final_result = merger.merge(layer_results)
-        else:
-            logger.info("[LAYER 4: Gemini LLM] No additional fields returned from LLM.")
-            final_result = merged_prelim
-    else:
-        if not api_key:
-            logger.info("[LAYER 4: Gemini LLM] Skipped (No GOOGLE_API_KEY configured).")
-        else:
-            logger.info("[LAYER 4: Gemini LLM] Skipped (Offline confidence %.3f is sufficient).", overall_conf)
-        final_result = merged_prelim
 
     # 6. Generate Document Summary
     doc_summary_text = await summarizer.generate_summary(text, report_type, final_result)
@@ -172,7 +163,7 @@ async def run_pipeline(
 
     # Log Layer Attribution Table in Terminal
     meta_info = final_result.get("__meta__", FieldResult(value={})).value
-    final_conf = meta_info.get("overall_confidence", overall_conf)
+    final_conf = meta_info.get("overall_confidence", 0.0)
 
     logger.info("-------------------- FIELD SOURCE ATTRIBUTION BREAKDOWN --------------------")
     for field_name, field_res in final_result.items():
