@@ -2,6 +2,7 @@ import logging
 import os
 from typing import Any
 
+import httpx
 from google import genai
 from google.genai import types
 
@@ -36,11 +37,38 @@ def _get_anthropic_client() -> Any | None:
     return None
 
 
+async def _summarize_with_ollama(prompt: str) -> str | None:
+    """Summarize document text using local Ollama model."""
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+    model = os.getenv("OLLAMA_MODEL", "llama3.2")
+    endpoint = f"{base_url}/api/generate"
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": 0.2},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(endpoint, json=payload)
+            if resp.status_code == 200:
+                res_data = resp.json()
+                summary = res_data.get("response", "").strip()
+                if summary:
+                    return summary
+    except Exception as exc:
+        logger.debug("Summarizer: Ollama local summarization unavailable: %s", exc)
+    return None
+
+
 async def generate_summary(text: str, report_type: ReportType, extracted_fields: dict[str, FieldResult]) -> str:
     """Generate a concise summary of the document.
 
-    Prioritizes Gemini (or Anthropic) if API credentials are provided.
-    Otherwise, falls back to a deterministic offline heuristic summary.
+    Checks:
+    1. Local Ollama (if configured or enabled)
+    2. Google Gemini (if API key configured)
+    3. Anthropic Claude (if API key configured)
+    4. Deterministic offline heuristics fallback
     """
     summary_prompt = (
         f"You are an AI document summarizer. Give a concise 1-2 sentence paragraph summarizing the following raw "
@@ -49,7 +77,14 @@ async def generate_summary(text: str, report_type: ReportType, extracted_fields:
         f"<document_text>\n{text[:5000]}\n</document_text>"
     )
 
-    # 1. Try Google Gemini LLM
+    # 1. Try Local Ollama if enabled or configured
+    if os.getenv("LLM_PROVIDER") == "ollama" or os.getenv("OLLAMA_ENABLED", "").lower() in ("true", "1", "yes"):
+        logger.info("Generating summary via Local Ollama...")
+        ollama_res = await _summarize_with_ollama(summary_prompt)
+        if ollama_res:
+            return ollama_res
+
+    # 2. Try Google Gemini LLM
     gemini_client = _get_gemini_client()
     if gemini_client:
         logger.info("Generating summary via Google Gemini API...")
@@ -68,7 +103,12 @@ async def generate_summary(text: str, report_type: ReportType, extracted_fields:
         except Exception as exc:
             logger.warning("Summarizer: Gemini LLM summary failed: %s. Trying fallback...", exc)
 
-    # 2. Try Anthropic Claude LLM
+    # 3. Try Local Ollama if not already tried
+    ollama_res = await _summarize_with_ollama(summary_prompt)
+    if ollama_res:
+        return ollama_res
+
+    # 4. Try Anthropic Claude LLM
     anthropic_client = _get_anthropic_client()
     if anthropic_client:
         logger.info("Generating summary via Anthropic API...")
@@ -84,7 +124,7 @@ async def generate_summary(text: str, report_type: ReportType, extracted_fields:
         except Exception as exc:
             logger.warning("Summarizer: Anthropic fallback failed: %s.", exc)
 
-    # 3. Deterministic Heuristic-Based Summarization (Offline)
+    # 5. Deterministic Heuristic-Based Summarization (Offline)
     logger.info("Generating summary via Heuristics (Offline)...")
     fields = {k: v.value for k, v in extracted_fields.items() if k != "__meta__"}
     if not fields:
@@ -109,4 +149,3 @@ async def generate_summary(text: str, report_type: ReportType, extracted_fields:
 
     else:
         return f"Document structured layout parsed locally finding {len(fields)} items."
-
