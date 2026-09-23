@@ -124,17 +124,17 @@ async def run_pipeline(
     # 3. Extraction layers (Layer 4 LLM called first)
     layer_results: dict[str, ExtractionResult] = {}
 
-    api_key = os.getenv("GOOGLE_API_KEY", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
-    if api_key:
-        logger.info("[LAYER 4: Gemini LLM (PRIMARY)] 🤖 Invoking Google Gemini LLM extraction first...")
+    if layer4_llm.is_available():
+        active_prov = layer4_llm.get_active_provider().upper()
+        logger.info("[LAYER 4: %s LLM (PRIMARY)] 🤖 Invoking %s LLM extraction first...", active_prov, active_prov)
         l4_result = await layer4_llm.extract(text, report_type)
         if l4_result:
             layer_results["layer4_llm"] = l4_result
-            logger.info("[LAYER 4: Gemini LLM] Extracted %d field(s): %s", len(l4_result), list(l4_result.keys()))
+            logger.info("[LAYER 4: %s LLM] Extracted %d field(s): %s", active_prov, len(l4_result), list(l4_result.keys()))
         else:
-            logger.info("[LAYER 4: Gemini LLM] No fields returned from Gemini LLM.")
+            logger.info("[LAYER 4: %s LLM] No fields returned or extraction fallback triggered.", active_prov)
     else:
-        logger.info("[LAYER 4: Gemini LLM] Skipped (No GOOGLE_API_KEY / GEMINI_API_KEY configured).")
+        logger.info("[LAYER 4: LLM] Skipped (No local Ollama / Gemini provider configured). Running offline layers.")
 
     # Offline extraction layers
     l1 = layer1_pdfplumber.extract(text, tables, report_type, spatial_words=spatial_words)

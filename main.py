@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.routers import health, extract
+from app.routers import health, extract, eval
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +33,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 app.include_router(health.router)
 app.include_router(extract.router)
+app.include_router(eval.router)
 
 # ---------------------------------------------------------------------------
 # Static Frontend

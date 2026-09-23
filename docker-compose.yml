@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  smart-report-extractor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smart-report-extractor
+    ports:
+      - "8000:8000"
+    environment:
+      - LLM_PROVIDER=auto
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2
+      # Optional: set GOOGLE_API_KEY for cloud LLM mode
+      # - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    restart: unless-stopped
+    depends_on:
+      - ollama
+
+  # Optional local Ollama inference service
+  ollama:
+    image: ollama/ollama:latest
+    container_name: smart-report-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  ollama_data:

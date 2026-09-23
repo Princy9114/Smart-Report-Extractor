@@ -48,3 +48,13 @@ def test_health_check_returns_200():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_eval_benchmark_endpoint():
+    response = client.get("/eval/benchmark")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+    assert "metrics" in data
+    assert "Consensus Ensemble (Merged)" in data["metrics"]
+    assert "attribution_percentages" in data
