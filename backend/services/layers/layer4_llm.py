@@ -136,9 +136,11 @@ def _build_prompts(
     return system, user_content
 
 
-def _parse_response(raw: str) -> dict[str, Any]:
+def _parse_response(raw: Any) -> dict[str, Any]:
     """Extract JSON object from raw LLM output, stripping markdown fences."""
-    cleaned = raw.strip()
+    if not raw:
+        return {}
+    cleaned = str(raw).strip()
     if cleaned.startswith("```json"):
         cleaned = cleaned.removeprefix("```json")
     elif cleaned.startswith("```"):
@@ -146,7 +148,13 @@ def _parse_response(raw: str) -> dict[str, Any]:
     if cleaned.endswith("```"):
         cleaned = cleaned.removesuffix("```")
     cleaned = cleaned.strip()
-    return json.loads(cleaned)
+    if not cleaned:
+        return {}
+    try:
+        data = json.loads(cleaned)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 def _to_field_results(data: dict[str, Any], source: str = "llm_gemini") -> dict[str, FieldResult]:
