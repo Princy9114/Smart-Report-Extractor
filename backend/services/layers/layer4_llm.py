@@ -216,11 +216,12 @@ async def _extract_with_ollama(
     *,
     base_url: str | None = None,
     model: str | None = None,
-    timeout: float = 30.0,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     """Execute structured JSON inference using a local Ollama instance."""
     url = (base_url or os.getenv("OLLAMA_BASE_URL", _DEFAULT_OLLAMA_URL)).rstrip("/")
     model_name = model or os.getenv("OLLAMA_MODEL", _DEFAULT_OLLAMA_MODEL)
+    eff_timeout = timeout if timeout is not None else float(os.getenv("OLLAMA_TIMEOUT", "120.0"))
 
     endpoint = f"{url}/api/chat"
     payload = {
@@ -236,21 +237,34 @@ async def _extract_with_ollama(
         },
     }
 
-    logger.debug("layer4_llm: Querying local Ollama endpoint %s with model '%s'...", endpoint, model_name)
+    logger.debug("layer4_llm: Querying local Ollama endpoint %s with model '%s' (timeout=%.1fs)...", endpoint, model_name, eff_timeout)
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(endpoint, json=payload)
-        resp.raise_for_status()
-        res_json = resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=eff_timeout) as client:
+            resp = await client.post(endpoint, json=payload)
+            if resp.status_code == 404:
+                err_msg = resp.text
+                try:
+                    err_json = resp.json()
+                    err_msg = err_json.get("error", err_msg)
+                except Exception:
+                    pass
+                raise ValueError(f"Model '{model_name}' not found in Ollama ({err_msg}). Run 'ollama pull {model_name}' first.")
+            resp.raise_for_status()
+            res_json = resp.json()
 
-        # Check response structure
-        content = ""
-        if "message" in res_json and "content" in res_json["message"]:
-            content = res_json["message"]["content"]
-        elif "response" in res_json:
-            content = res_json["response"]
+            # Check response structure
+            content = ""
+            if "message" in res_json and "content" in res_json["message"]:
+                content = res_json["message"]["content"]
+            elif "response" in res_json:
+                content = res_json["response"]
 
-        return _parse_response(content)
+            return _parse_response(content)
+    except httpx.ConnectError:
+        raise ConnectionError(f"Could not connect to Ollama at {url}. Make sure Ollama daemon is running.")
+    except httpx.TimeoutException:
+        raise TimeoutError(f"Ollama inference timed out after {eff_timeout:.0f}s (CPU/GPU took too long to generate).")
 
 
 # ---------------------------------------------------------------------------

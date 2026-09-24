@@ -41,6 +41,7 @@ async def _summarize_with_ollama(prompt: str) -> str | None:
     """Summarize document text using local Ollama model."""
     base_url = (os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
     model = os.getenv("OLLAMA_MODEL") or "llama3.2"
+    timeout = float(os.getenv("OLLAMA_TIMEOUT", "90.0"))
     endpoint = f"{base_url}/api/generate"
     payload = {
         "model": model,
@@ -49,13 +50,15 @@ async def _summarize_with_ollama(prompt: str) -> str | None:
         "options": {"temperature": 0.2},
     }
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(endpoint, json=payload)
             if resp.status_code == 200:
                 res_data = resp.json()
                 summary = res_data.get("response")
                 if summary and str(summary).strip():
                     return str(summary).strip()
+            elif resp.status_code == 404:
+                logger.warning("Summarizer: Model '%s' not found in Ollama. Pull it with 'ollama pull %s'.", model, model)
     except Exception as exc:
         logger.debug("Summarizer: Ollama local summarization unavailable: %s", exc)
     return None
